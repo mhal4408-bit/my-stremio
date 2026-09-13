@@ -1,55 +1,112 @@
-const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
+const { addonBuilder } = require("stremio-addon-sdk");
+const axios = require("axios");
+const cheerio = require("cheerio");
 
-// 1. تعريف الإضافة (Manifest)
-const builder = new addonBuilder({
-    id: "org.myarabicaddon",
-    version: "1.0.0",
-    name: "إضافتي الخاصة",
-    description: "إضافة تجريبية لمحتوى الأقسام العربية",
-    types: ["movie"],
-    catalogs: [
-        {
-            type: "movie",
-            id: "my_custom_catalog",
-            name: "أفلام عربية تجريبية"
-        }
-    ],
-    resources: ["catalog", "stream"]
-});
+const SITE_URL = "https://web5.topcinema.fan";
 
-// 2. معالجة طلب القائمة (Catalog Handler)
-builder.defineCatalogHandler((args) => {
-    if (args.type === "movie" && args.id === "my_custom_catalog") {
-        return Promise.resolve({
-            metas: [
-                {
-                    id: "tt0111161",
-                    type: "movie",
-                    name: "فيلم تجريبي 1",
-                    poster: "https://via.placeholder.com/300x450.png?text=Movie+1",
-                    description: "هذا وصف للفيلم التجريبي الأول"
-                }
-            ]
-        });
+const manifest = {
+  id: "com.mycompany.topcinema",
+  version: "1.0.0",
+  name: "Top Cinema Addon",
+  description: "سحب الأفلام تلقائياً من موقع Top Cinema",
+  resources: ["catalog", "stream"],
+  types: ["movie"],
+  catalogs: [
+    {
+      type: "movie",
+      id: "topcinema_movies",
+      name: "Top Cinema - أحدث الأفلام"
     }
-    return Promise.resolve({ metas: [] });
-});
+  ]
+};
 
-// 3. معالجة طلب روابط التشغيل (Stream Handler)
-builder.defineStreamHandler((args) => {
-    if (args.id === "tt0111161") {
-        return Promise.resolve({
-            streams: [
-                {
-                    title: "سيرفر مشاهدة HD",
-                    url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
-                }
-            ]
+const builder = new addonBuilder(manifest);
+
+// دالة جلب قائمة الأفلام من الصفحة الرئيسية
+async function getTopCinemaCatalog() {
+  try {
+    const { data } = await axios.get(`${SITE_URL}/home1/`, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+    const $ = cheerio.load(data);
+    const movies = [];
+
+    // تحديد كروت الأفلام من كود الصفحة
+    $(".Small--Box, .MovieBlock, .Grid--Item").each((index, element) => {
+      const title = $(element).find("h3, .Title").text().trim();
+      const pageUrl = $(element).find("a").attr("href");
+      const poster = $(element).find("img").attr("src") || $(element).find("img").attr("data-src");
+
+      if (title && pageUrl) {
+        // إنشاء ID فريد من رابط الصفحة لسهولة التتبع
+        const id = "tc_" + Buffer.from(pageUrl).toString("base64");
+        movies.push({
+          id: id,
+          type: "movie",
+          name: title,
+          poster: poster ? (poster.startsWith("http") ? poster : SITE_URL + poster) : "",
+          description: `فيلم مأخوذ من Top Cinema: ${title}`
         });
+      }
+    });
+
+    return movies;
+  } catch (error) {
+    console.error("خطأ في جلب الكتالوج:", error.message);
+    return [];
+  }
+}
+
+// دالة استخراج رابط التشغيل من صفحة الفيلم
+async function getStreamUrl(base64PageUrl) {
+  try {
+    const pageUrl = Buffer.from(base64PageUrl, "base64").toString("utf-8");
+    const { data } = await axios.get(pageUrl, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+    const $ = cheerio.load(data);
+
+    // البحث عن روابط iFrame أو عناصر التشغيل داخل الصفحة
+    const iframeSrc = $("iframe").attr("src");
+    
+    if (iframeSrc) {
+      return iframeSrc;
     }
-    return Promise.resolve({ streams: [] });
+    
+    return null;
+  } catch (error) {
+    console.error("خطأ في استخراج رابط البث:", error.message);
+    return null;
+  }
+}
+
+// معالج الكتالوج
+builder.defineCatalogHandler(async ({ type, id }) => {
+  if (type === "movie" && id === "topcinema_movies") {
+    const metas = await getTopCinemaCatalog();
+    return { metas };
+  }
+  return { metas: [] };
 });
 
-// 4. تشغيل خادم الإضافة محلياً
-serveHTTP(builder.getInterface(), { port: 7000 });
-console.log("الإضافة تعمل الآن على: http://127.0.0.1:7000/manifest.json");
+// معالج روابط التشغيل
+builder.defineStreamHandler(async ({ type, id }) => {
+  if (type === "movie" && id.startsWith("tc_")) {
+    const base64PageUrl = id.replace("tc_", "");
+    const streamUrl = await getStreamUrl(base64PageUrl);
+
+    if (streamUrl) {
+      return {
+        streams: [
+          {
+            title: "سيرفر Top Cinema",
+            url: streamUrl
+          }
+        ]
+      };
+    }
+  }
+  return { streams: [] };
+});
+
+module.exports = builder.getInterface();
