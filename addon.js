@@ -1,12 +1,12 @@
 const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
-const puppeteer = require('puppeteer');
+const axios = require('axios');
 const cheerio = require('cheerio');
 
 const manifest = {
-    id: 'org.topcinema.puppeteer.v1',
+    id: 'org.topcinema.fast.v1',
     version: '1.0.0',
     name: 'Top Cinema - أفلام ومسلسلات',
-    description: 'يستخرج أحدث الأفلام والمسلسلات عبر متصفح تلقائي',
+    description: 'إضافة سريعة وخفيفة لموقع Top Cinema',
     resources: ['catalog', 'stream'],
     types: ['movie', 'series'],
     catalogs: [
@@ -20,21 +20,23 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// 1. الكتالوج
+// إعدادات الطلبات لتجاوز الحظر ومنع الـ Crash
+const httpConfig = {
+    timeout: 8000,
+    headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'ar,en-US;q=0.7,en;q=0.3',
+        'Cache-Control': 'no-cache'
+    }
+};
+
+// 1. الكتالوج - جلب الأفلام والبوسترات بثبات
 builder.defineCatalogHandler(async (args) => {
     if (args.type === 'movie' && args.id === 'topcinema-movies') {
-        let browser;
         try {
-            browser = await puppeteer.launch({
-                headless: "new",
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
-            });
-            const page = await browser.newPage();
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
-            
-            await page.goto('https://web5.topcinema.fan/movies/', { waitUntil: 'domcontentloaded', timeout: 20000 });
-            const content = await page.content();
-            const $ = cheerio.load(content);
+            const { data } = await axios.get('https://web5.topcinema.fan/movies/', httpConfig);
+            const $ = cheerio.load(data);
             const metas = [];
 
             $('.Small--Box, .movie-box, .BlockItem, article, .post-item').each((i, element) => {
@@ -56,69 +58,59 @@ builder.defineCatalogHandler(async (args) => {
                 }
             });
 
-            await browser.close();
             const uniqueMetas = Array.from(new Map(metas.map(item => [item.id, item])).values());
             return { metas: uniqueMetas };
         } catch (error) {
-            if (browser) await browser.close();
-            console.error('Catalog Puppeteer Error:', error.message);
+            console.error('Catalog Error:', error.message);
             return { metas: [] };
         }
     }
     return { metas: [] };
 });
 
-// 2. معالج السيرفرات عبر فتح الصفحة بالمتصفح الوهمي وتخطى الحماية
+// 2. معالج السيرفرات المباشر السريع
 builder.defineStreamHandler(async (args) => {
     if (args.type === 'movie' && args.id.startsWith('topcin:')) {
-        let browser;
         try {
             const encodedUrl = args.id.replace('topcin:', '');
             const movieMainUrl = Buffer.from(encodedUrl, 'base64').toString('utf-8');
-            const watchPageUrl = movieMainUrl.replace(/\/$/, '') + '/watch/';
+            
+            // تحويل رابط الفيلم المباشر إلى رابط صفحة المشاهدة
+            let watchPageUrl = movieMainUrl.replace(/\/$/, '') + '/watch/';
 
-            browser = await puppeteer.launch({
-                headless: "new",
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
+            const { data } = await axios.get(watchPageUrl, {
+                ...httpConfig,
+                headers: { ...httpConfig.headers, 'Referer': movieMainUrl }
             });
-            const page = await browser.newPage();
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
 
-            // فتح صفحة المشاهدة مباشرة والانتظار لتفادي التوجيهات
-            await page.goto(watchPageUrl, { waitUntil: 'networkidle2', timeout: 25000 });
-
-            // استخراج محتوى الصفحة بعد تحميل جميع النصوص البرمجية
-            const content = await page.content();
-            const $ = cheerio.load(content);
+            const $ = cheerio.load(data);
             const streams = [];
 
-            // أ) جلب الـ Iframes المتاحة
+            // أ) جلب السيرفرات المباشرة المتاحة في الصفحة
             $('iframe').each((i, el) => {
                 let src = $(el).attr('src') || $(el).attr('data-src');
                 if (src && !src.includes('facebook') && !src.includes('google')) {
                     if (src.startsWith('//')) src = 'https:' + src;
                     streams.push({
-                        title: `Top Cinema - Server Main ${i + 1}`,
+                        title: `Top Cinema - Server ${i + 1}`,
                         url: src
                     });
                 }
             });
 
-            // ب) جلب المشغل المباشر المضمن
+            // ب) جلب المشغل المضمن
             const embedUrl = $('meta[property="og:video:url"]').attr('content') || $('meta[property="og:video:secure_url"]').attr('content');
             if (embedUrl) {
                 streams.push({
-                    title: 'Top Cinema - Direct Stream ⚡',
+                    title: 'Top Cinema - Fast Server ⚡',
                     url: embedUrl
                 });
             }
 
-            await browser.close();
             const uniqueStreams = Array.from(new Map(streams.map(item => [item.url, item])).values());
             return { streams: uniqueStreams };
         } catch (error) {
-            if (browser) await browser.close();
-            console.error('Stream Puppeteer Error:', error.message);
+            console.error('Stream Error:', error.message);
             return { streams: [] };
         }
     }
