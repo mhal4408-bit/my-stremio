@@ -20,7 +20,7 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// 1. جلب قائمة الأفلام والبوسترات من قسم الأفلام المباشر
+// 1. جلب قائمة الأفلام والبوسترات
 builder.defineCatalogHandler(async (args) => {
     if (args.type === 'movie' && args.id === 'topcinema-movies') {
         try {
@@ -72,38 +72,57 @@ builder.defineCatalogHandler(async (args) => {
     return { metas: [] };
 });
 
-// 2. معالج روابط التشغيل والسيرفرات (Stream Handler)
+// 2. معالج روابط التشغيل والسيرفرات المحدث
 builder.defineStreamHandler(async (args) => {
     if (args.type === 'movie' && args.id.startsWith('topcin:')) {
         try {
-            // فك تشفير رابط صفحة الفيلم من المعرّف
             const encodedUrl = args.id.replace('topcin:', '');
             const moviePageUrl = Buffer.from(encodedUrl, 'base64').toString('utf-8');
 
-            const { data } = await axios.get(moviePageUrl, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                },
-                timeout: 10000
+            const headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': moviePageUrl
+            };
+
+            // 1. زيارة صفحة التفاصيل الأولى للفيلم
+            const { data: mainData } = await axios.get(moviePageUrl, { headers, timeout: 10000 });
+            const $main = cheerio.load(mainData);
+
+            // البحث عن رابط زر "مشاهدة الان" بجميع الأشكال الممكنة
+            let watchPageUrl = '';
+            $main('a').each((i, el) => {
+                const href = $main(el).attr('href') || '';
+                const text = $main(el).text().trim();
+                
+                if (href.includes('/watch/') || text.includes('مشاهدة الان') || text.includes('مشاهدة الآن') || text.includes('مشاهدة')) {
+                    watchPageUrl = href;
+                }
             });
 
-            const $ = cheerio.load(data);
+            if (!watchPageUrl) {
+                watchPageUrl = moviePageUrl;
+            } else if (!watchPageUrl.startsWith('http')) {
+                watchPageUrl = 'https://web5.topcinema.fan' + watchPageUrl;
+            }
+
+            // 2. زيارة صفحة المشاهدة وسحب مشغلات السيرفرات
+            const { data: watchData } = await axios.get(watchPageUrl, { headers, timeout: 10000 });
+            const $watch = cheerio.load(watchData);
             const streams = [];
 
-            // البحث عن وسم التشغيل <iframe> أو عناصر السيرفرات في الصفحة
-            $('iframe, [data-server]').each((i, element) => {
-                let streamUrl = $(element).attr('src') || $(element).attr('data-server') || $(element).attr('data-url');
+            $watch('iframe, [data-server], [data-url], [data-link], .server-item, ul.servers-list li').each((i, element) => {
+                let streamUrl = $watch(element).attr('src') || $watch(element).attr('data-server') || $watch(element).attr('data-url') || $watch(element).attr('data-link');
 
                 if (streamUrl) {
                     if (streamUrl.startsWith('//')) {
                         streamUrl = 'https:' + streamUrl;
                     }
 
-                    // استخراج اسم المشغل/السيرفر لعرضه للمستخدم
-                    let serverName = 'Top Cinema Server ' + (i + 1);
+                    let serverName = `سيرفر ${i + 1}`;
                     if (streamUrl.includes('dood')) serverName = 'DoodStream';
-                    else if (streamUrl.includes('voe')) serverName = 'VOE Server';
+                    else if (streamUrl.includes('voe')) serverName = 'VOE';
                     else if (streamUrl.includes('streamtape')) serverName = 'Streamtape';
+                    else if (streamUrl.includes('filelions')) serverName = 'FileLions';
 
                     streams.push({
                         title: `Top Cinema - ${serverName}`,
