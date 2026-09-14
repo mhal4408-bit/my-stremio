@@ -20,6 +20,7 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
+// 1. جلب قائمة الأفلام والبوسترات من الموقع
 builder.defineCatalogHandler(async (args) => {
     if (args.type === 'movie' && args.id === 'topcinema-movies') {
         try {
@@ -53,6 +54,11 @@ builder.defineCatalogHandler(async (args) => {
         }
     }
     return { metas: [] };
+});
+
+// 2. معالج روابط التشغيل والمشاهدة
+builder.defineStreamHandler(async (args) => {
+    return { streams: [] };
 });
 
 module.exports = builder.getInterface();
