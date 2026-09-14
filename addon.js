@@ -3,10 +3,10 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 
 const manifest = {
-    id: 'org.topcinema.fast.v1',
-    version: '1.0.0',
+    id: 'org.topcinema.fast.v2',
+    version: '2.0.0', // رفع الاصدار لضمان مسح الـ Cache في Stremio
     name: 'Top Cinema - أفلام ومسلسلات',
-    description: 'إضافة سريعة وخفيفة لموقع Top Cinema',
+    description: 'إضافة سريعة لموقع Top Cinema',
     resources: ['catalog', 'stream'],
     types: ['movie', 'series'],
     catalogs: [
@@ -20,18 +20,16 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// إعدادات الطلبات لتجاوز الحظر ومنع الـ Crash
 const httpConfig = {
-    timeout: 8000,
+    timeout: 10000,
     headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'ar,en-US;q=0.7,en;q=0.3',
-        'Cache-Control': 'no-cache'
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'ar,en-US;q=0.7,en;q=0.3'
     }
 };
 
-// 1. الكتالوج - جلب الأفلام والبوسترات بثبات
+// 1. الكتالوج - جلب قائمة الأفلام
 builder.defineCatalogHandler(async (args) => {
     if (args.type === 'movie' && args.id === 'topcinema-movies') {
         try {
@@ -68,43 +66,76 @@ builder.defineCatalogHandler(async (args) => {
     return { metas: [] };
 });
 
-// 2. معالج السيرفرات المباشر السريع
+// 2. معالج السيرفرات - استخراج الـ Nonce المخبأ وتنفيذ طلب الـ AJAX
 builder.defineStreamHandler(async (args) => {
     if (args.type === 'movie' && args.id.startsWith('topcin:')) {
         try {
             const encodedUrl = args.id.replace('topcin:', '');
             const movieMainUrl = Buffer.from(encodedUrl, 'base64').toString('utf-8');
-            
-            // تحويل رابط الفيلم المباشر إلى رابط صفحة المشاهدة
             let watchPageUrl = movieMainUrl.replace(/\/$/, '') + '/watch/';
 
-            const { data } = await axios.get(watchPageUrl, {
+            const { data: watchHtml } = await axios.get(watchPageUrl, {
                 ...httpConfig,
                 headers: { ...httpConfig.headers, 'Referer': movieMainUrl }
             });
 
-            const $ = cheerio.load(data);
+            const $ = cheerio.load(watchHtml);
             const streams = [];
 
-            // أ) جلب السيرفرات المباشرة المتاحة في الصفحة
-            $('iframe').each((i, el) => {
-                let src = $(el).attr('src') || $(el).attr('data-src');
-                if (src && !src.includes('facebook') && !src.includes('google')) {
-                    if (src.startsWith('//')) src = 'https:' + src;
-                    streams.push({
-                        title: `Top Cinema - Server ${i + 1}`,
-                        url: src
-                    });
+            // أ) استخراج الـ Nonce المخبأ داخل نصوص الجافاسكريبت بالصفحة
+            let nonce = $('body').attr('data-nonce') || $('[data-nonce]').attr('data-nonce') || '';
+            if (!nonce) {
+                const nonceMatch = watchHtml.match(/nonce["']\s*:\s*["']([^"']+)["']/);
+                if (nonceMatch) nonce = nonceMatch[1];
+            }
+
+            // ب) استخراج أزرار السيرفرات وتنفيذ طلبات الـ AJAX
+            const ajaxPromises = [];
+            $('li.server--item, .watch--servers-list li').each((i, el) => {
+                const postId = $(el).attr('data-id');
+                const serverNum = $(element = el).attr('data-server');
+                const serverName = $(el).text().trim() || `Server ${i + 1}`;
+
+                if (postId && serverNum !== undefined) {
+                    const req = axios.post('https://web5.topcinema.fan/wp-admin/admin-ajax.php', 
+                        new URLSearchParams({
+                            action: 'get_player_server',
+                            i: serverNum,
+                            id: postId,
+                            nonce: nonce
+                        }).toString(), 
+                        {
+                            headers: {
+                                ...httpConfig.headers,
+                                'Referer': watchPageUrl,
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                            },
+                            timeout: 5000
+                        }
+                    ).then(res => {
+                        const responseHtml = typeof res.data === 'string' ? res.data : (res.data.embed || res.data.html || JSON.stringify(res.data));
+                        const $embed = cheerio.load(responseHtml);
+                        let iframeSrc = $embed('iframe').attr('src') || $embed('iframe').attr('data-src');
+
+                        if (iframeSrc) {
+                            if (iframeSrc.startsWith('//')) iframeSrc = 'https:' + iframeSrc;
+                            return { title: `Top Cinema - ${serverName}`, url: iframeSrc };
+                        }
+                        return null;
+                    }).catch(() => null);
+
+                    ajaxPromises.push(req);
                 }
             });
 
-            // ب) جلب المشغل المضمن
+            const results = await Promise.all(ajaxPromises);
+            results.forEach(res => { if (res) streams.push(res); });
+
+            // ج) خيار احتياطي لتضمين رابط og:video
             const embedUrl = $('meta[property="og:video:url"]').attr('content') || $('meta[property="og:video:secure_url"]').attr('content');
-            if (embedUrl) {
-                streams.push({
-                    title: 'Top Cinema - Fast Server ⚡',
-                    url: embedUrl
-                });
+            if (embedUrl && streams.length === 0) {
+                streams.push({ title: 'Top Cinema - Player Direct ⚡', url: embedUrl });
             }
 
             const uniqueStreams = Array.from(new Map(streams.map(item => [item.url, item])).values());
