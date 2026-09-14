@@ -20,12 +20,12 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// 1. جلب قائمة الأفلام والبوسترات من الموقع
+// 1. جلب قائمة الأفلام والبوسترات من قسم الأفلام المباشر
 builder.defineCatalogHandler(async (args) => {
     if (args.type === 'movie' && args.id === 'topcinema-movies') {
         try {
-            // استخدام رابط قسم الأفلام المباشر أو الصفحة الرئيسية
-            const url = 'https://topcinema.top/';
+            const url = 'https://web5.topcinema.fan/movies/';
+            
             const { data } = await axios.get(url, {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -38,28 +38,36 @@ builder.defineCatalogHandler(async (args) => {
             const $ = cheerio.load(data);
             const metas = [];
 
-            // البحث عن كروت الأفلام باستخدام أكثر من Selector شائع في الموقع
-            $('.Small--Box, .movie-box, .BlockItem, article').each((i, element) => {
-                const title = $(element).find('.Title, .title, h3, h2').first().text().trim();
+            // البحث في كروت الأفلام
+            $('.Small--Box, .movie-box, .BlockItem, article, .post-item').each((i, element) => {
+                const linkNode = $(element).find('a').first();
+                const moviePageUrl = linkNode.attr('href') || $(element).attr('href');
                 
-                // البحث عن صورة البوستر في كافّة الخصائص الممكنة (lazy loading)
+                const titleNode = $(element).find('.Title, .title, h3, h2, .name').first();
+                const title = titleNode.text().trim() || linkNode.attr('title') || '';
+
                 const imgNode = $(element).find('img').first();
-                const poster = imgNode.attr('data-src') || imgNode.attr('data-lazy-src') || imgNode.attr('src');
-                
-                const moviePageUrl = $(element).find('a').first().attr('href');
+                let poster = imgNode.attr('data-src') || imgNode.attr('data-lazy-src') || imgNode.attr('src') || '';
 
                 if (title && moviePageUrl) {
+                    if (poster && poster.startsWith('//')) {
+                        poster = 'https:' + poster;
+                    }
+
                     metas.push({
                         id: 'topcin:' + Buffer.from(moviePageUrl).toString('base64'),
                         type: 'movie',
                         name: title,
-                        poster: poster && poster.startsWith('http') ? poster : (poster ? 'https:' + poster : '')
+                        poster: poster
                     });
                 }
             });
 
-            console.log(`Scraped ${metas.length} items from Top Cinema.`);
-            return { metas };
+            // تصفية العناصر المكررة
+            const uniqueMetas = Array.from(new Map(metas.map(item => [item.id, item])).values());
+
+            console.log(`Scraped ${uniqueMetas.length} unique items from Top Cinema.`);
+            return { metas: uniqueMetas };
         } catch (error) {
             console.error('Error scraping Top Cinema:', error.message);
             return { metas: [] };
