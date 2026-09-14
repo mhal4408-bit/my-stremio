@@ -4,7 +4,7 @@ const cheerio = require('cheerio');
 
 const manifest = {
     id: 'org.topcinema.scraper',
-    version: '1.0.0',
+    version: '1.0.1',
     name: 'Top Cinema - أفلام ومسلسلات',
     description: 'يستخرج أحدث الأفلام والمسلسلات تلقائياً من موقع Top Cinema',
     resources: ['catalog', 'stream'],
