@@ -1,4 +1,4 @@
-const { addonBuilder } = require('stremio-addon-sdk');
+const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
 const axios = require('axios');
 const cheerio = require('cheerio');
 
@@ -56,9 +56,11 @@ builder.defineCatalogHandler(async (args) => {
     return { metas: [] };
 });
 
-// 2. معالج روابط التشغيل والمشاهدة
+// 2. معالج روابط التشغيل
 builder.defineStreamHandler(async (args) => {
     return { streams: [] };
 });
 
-module.exports = builder.getInterface();
+// 3. تشغيل السيرفر لاستقبال الطلبات على المنفذ المحدد من Render
+const port = process.env.PORT || 7000;
+serveHTTP(builder.getInterface(), { port: port });
