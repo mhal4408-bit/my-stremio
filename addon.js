@@ -4,7 +4,7 @@ const cheerio = require('cheerio');
 
 const manifest = {
     id: 'org.topcinema.scraper',
-    version: '1.0.5', // تحديث الإصدار لتفريغ الـ Cache
+    version: '1.0.6', // رفع رقم الإصدار لإنعاش الـ Cache داخل Stremio
     name: 'Top Cinema - أفلام ومسلسلات',
     description: 'يستخرج أحدث الأفلام والمسلسلات تلقائياً من موقع Top Cinema',
     resources: ['catalog', 'stream'],
@@ -20,7 +20,7 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// 1. جلب قائمة الأفلام
+// 1. جلب قائمة الأفلام والبوسترات
 builder.defineCatalogHandler(async (args) => {
     if (args.type === 'movie' && args.id === 'topcinema-movies') {
         try {
@@ -65,81 +65,78 @@ builder.defineCatalogHandler(async (args) => {
     return { metas: [] };
 });
 
-// 2. معالج السيرفرات الدقيق بناءً على data-id و data-server
+// 2. معالج السيرفرات المحدث بشكل دقيق
 builder.defineStreamHandler(async (args) => {
     if (args.type === 'movie' && args.id.startsWith('topcin:')) {
         try {
             const encodedUrl = args.id.replace('topcin:', '');
             const moviePageUrl = Buffer.from(encodedUrl, 'base64').toString('utf-8');
 
-            const headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': moviePageUrl
-            };
-
-            // 1. التوجه لصفحة المشاهدة /watch/
+            // تحويل رابط الفيلم تلقائياً إلى رابط المشاهدة
             let watchPageUrl = moviePageUrl;
-            if (!watchPageUrl.endsWith('/watch/')) {
-                const { data: mainData } = await axios.get(moviePageUrl, { headers, timeout: 10000 });
-                const $main = cheerio.load(mainData);
-                $main('a').each((i, el) => {
-                    const href = $main(el).attr('href') || '';
-                    if (href.includes('/watch/')) watchPageUrl = href;
-                });
-                if (!watchPageUrl.startsWith('http')) watchPageUrl = 'https://web5.topcinema.fan' + watchPageUrl;
+            if (!watchPageUrl.endsWith('/watch/') && !watchPageUrl.endsWith('/watch')) {
+                watchPageUrl = watchPageUrl.replace(/\/$/, '') + '/watch/';
             }
 
-            // 2. قراءة صفحة المشاهدة وسحب أزرار السيرفرات
-            const { data: watchData } = await axios.get(watchPageUrl, { headers, timeout: 10000 });
+            const headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Referer': watchPageUrl,
+                'Origin': 'https://web5.topcinema.fan'
+            };
+
+            // جلب محتوى صفحة المشاهدة
+            let watchData = '';
+            try {
+                const res = await axios.get(watchPageUrl, { headers, timeout: 10000 });
+                watchData = res.data;
+            } catch (err) {
+                const res = await axios.get(moviePageUrl, { headers, timeout: 10000 });
+                watchData = res.data;
+            }
+
             const $watch = cheerio.load(watchData);
             const streams = [];
-
             const ajaxEndpoint = 'https://web5.topcinema.fan/wp-admin/admin-ajax.php';
             const serverPromises = [];
 
+            // البحث المباشر في عناصر li.server--item
             $watch('li.server--item, .watch--servers-list li').each((i, element) => {
                 const postId = $watch(element).attr('data-id');
                 const serverNum = $watch(element).attr('data-server');
-                const serverName = $watch(element).text().trim() || `سيرفر ${i + 1}`;
+                const serverName = $watch(element).find('span').text().trim() || $watch(element).text().trim() || `سيرفر ${i + 1}`;
 
                 if (postId && serverNum !== undefined) {
-                    // تجربة الأكشن الرئيسي للحصول على رابط المشغل
                     const fetchServer = async () => {
-                        const actions = ['get_player_server', 'get_server', 'player_server'];
-                        
-                        for (const actionName of actions) {
-                            try {
-                                const params = new URLSearchParams({
-                                    action: actionName,
-                                    i: serverNum,
-                                    id: postId
-                                });
+                        const payload = new URLSearchParams();
+                        payload.append('action', 'get_player_server');
+                        payload.append('i', serverNum);
+                        payload.append('id', postId);
 
-                                const res = await axios.post(ajaxEndpoint, params, {
-                                    headers: {
-                                        ...headers,
-                                        'X-Requested-With': 'XMLHttpRequest',
-                                        'Content-Type': 'application/x-www-form-urlencoded'
-                                    },
-                                    timeout: 4000
-                                });
+                        try {
+                            const res = await axios.post(ajaxEndpoint, payload.toString(), {
+                                headers: {
+                                    ...headers,
+                                    'X-Requested-With': 'XMLHttpRequest',
+                                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                                },
+                                timeout: 5000
+                            });
 
-                                if (res.data) {
-                                    const htmlContent = typeof res.data === 'string' ? res.data : (res.data.embed || res.data.html || JSON.stringify(res.data));
-                                    const $embed = cheerio.load(htmlContent);
-                                    let iframeSrc = $embed('iframe').attr('src') || $embed('iframe').attr('data-src');
+                            if (res.data) {
+                                const responseHtml = typeof res.data === 'string' ? res.data : (res.data.embed || res.data.html || JSON.stringify(res.data));
+                                const $embed = cheerio.load(responseHtml);
+                                let iframeSrc = $embed('iframe').attr('src') || $embed('iframe').attr('data-src');
 
-                                    if (iframeSrc) {
-                                        if (iframeSrc.startsWith('//')) iframeSrc = 'https:' + iframeSrc;
-                                        return {
-                                            title: `Top Cinema - ${serverName}`,
-                                            url: iframeSrc
-                                        };
-                                    }
+                                if (iframeSrc) {
+                                    if (iframeSrc.startsWith('//')) iframeSrc = 'https:' + iframeSrc;
+                                    return {
+                                        title: `Top Cinema - ${serverName}`,
+                                        url: iframeSrc
+                                    };
                                 }
-                            } catch (e) {
-                                // تجربة الأكشن التالي في حال الفشل
                             }
+                        } catch (e) {
+                            // التجاوز عند خطأ أحد السيرفرات
                         }
                         return null;
                     };
@@ -148,18 +145,17 @@ builder.defineStreamHandler(async (args) => {
                 }
             });
 
-            // انتظار نتائج جلب السيرفرات
             const results = await Promise.all(serverPromises);
             results.forEach(item => {
                 if (item) streams.push(item);
             });
 
-            // سيرفر احتياطي في حال عدم إرجاع أي رابط عبر AJAX
+            // خيار احتياطي لتضمين مشغل og:video في حال فشل طلبات AJAX
             if (streams.length === 0) {
                 const embedUrl = $watch('meta[property="og:video:url"]').attr('content') || $watch('meta[property="og:video:secure_url"]').attr('content');
                 if (embedUrl) {
                     streams.push({
-                        title: 'Top Cinema - سيرفر أصلـي مباشر ⚡',
+                        title: 'Top Cinema - سيرفر أصلي مباشر ⚡',
                         url: embedUrl
                     });
                 }
