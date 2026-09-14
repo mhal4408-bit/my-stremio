@@ -4,7 +4,7 @@ const cheerio = require('cheerio');
 
 const manifest = {
     id: 'org.topcinema.scraper',
-    version: '1.0.2', // رفع الإصدار لتحديث الـ Cache في Stremio
+    version: '1.0.3', // رفع رقم الإصدار لتفريغ الـ Cache في Stremio
     name: 'Top Cinema - أفلام ومسلسلات',
     description: 'يستخرج أحدث الأفلام والمسلسلات تلقائياً من موقع Top Cinema',
     resources: ['catalog', 'stream'],
@@ -20,16 +20,13 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// 1. جلب قائمة الأفلام والبوسترات
+// 1. جلب الكتالوج
 builder.defineCatalogHandler(async (args) => {
     if (args.type === 'movie' && args.id === 'topcinema-movies') {
         try {
             const url = 'https://web5.topcinema.fan/movies/';
-            
             const { data } = await axios.get(url, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                },
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
                 timeout: 10000
             });
             
@@ -47,9 +44,7 @@ builder.defineCatalogHandler(async (args) => {
                 let poster = imgNode.attr('data-src') || imgNode.attr('data-lazy-src') || imgNode.attr('src') || '';
 
                 if (title && moviePageUrl) {
-                    if (poster && poster.startsWith('//')) {
-                        poster = 'https:' + poster;
-                    }
+                    if (poster && poster.startsWith('//')) poster = 'https:' + poster;
 
                     metas.push({
                         id: 'topcin:' + Buffer.from(moviePageUrl).toString('base64'),
@@ -70,7 +65,7 @@ builder.defineCatalogHandler(async (args) => {
     return { metas: [] };
 });
 
-// 2. معالج السيرفرات الدقيق اعتماداً على صورة Inspect
+// 2. معالج السيرفرات المحدث لفك تشفير embedScreen
 builder.defineStreamHandler(async (args) => {
     if (args.type === 'movie' && args.id.startsWith('topcin:')) {
         try {
@@ -82,17 +77,14 @@ builder.defineStreamHandler(async (args) => {
                 'Referer': moviePageUrl
             };
 
-            // 1. الانتقال إلى صفحة الفيلم
+            // 1. طلب الصفحة الأولى
             const { data: mainData } = await axios.get(moviePageUrl, { headers, timeout: 10000 });
             const $main = cheerio.load(mainData);
 
-            // البحث عن رابط زر "مشاهدة الان"
             let watchPageUrl = '';
             $main('a').each((i, el) => {
                 const href = $main(el).attr('href') || '';
-                if (href.includes('/watch/')) {
-                    watchPageUrl = href;
-                }
+                if (href.includes('/watch/')) watchPageUrl = href;
             });
 
             if (!watchPageUrl) watchPageUrl = moviePageUrl;
@@ -103,36 +95,41 @@ builder.defineStreamHandler(async (args) => {
             const $watch = cheerio.load(watchData);
             const streams = [];
 
-            // أ) استخراج رابط og:video:url (الرابط المباشر المضمن)
-            const metaEmbed = $watch('meta[property="og:video:url"]').attr('content') || $watch('meta[property="og:video:secure_url"]').attr('content');
-            if (metaEmbed) {
-                streams.push({
-                    title: 'Top Cinema - سيرفر أصلـي مباشر ⚡',
-                    url: metaEmbed
-                });
-            }
+            // استخراج رابط embedScreen المباشر
+            const embedUrl = $watch('meta[property="og:video:url"]').attr('content') || $watch('meta[property="og:video:secure_url"]').attr('content');
 
-            // ب) استخراج السيرفرات من العناصر المحددة في الصورة (.watch--servers-list)
-            $watch('.watch--servers-list li.server--item, .watch--servers-list li').each((i, element) => {
-                let serverUrl = $watch(element).attr('data-link') || $watch(element).attr('data-server') || $watch(element).attr('data-url');
-                let serverName = $watch(element).find('span').text().trim() || $watch(element).text().trim() || `سيرفر ${i + 1}`;
+            if (embedUrl) {
+                try {
+                    // زيارة صفحة الـ Embed لاستخراج الـ iframe الحقيقي من داخلها
+                    const { data: embedData } = await axios.get(embedUrl, { headers, timeout: 8000 });
+                    const $embed = cheerio.load(embedData);
 
-                if (serverUrl) {
-                    if (serverUrl.startsWith('//')) serverUrl = 'https:' + serverUrl;
+                    $embed('iframe').each((i, el) => {
+                        let src = $embed(el).attr('src') || $embed(el).attr('data-src');
+                        if (src) {
+                            if (src.startsWith('//')) src = 'https:' + src;
+                            streams.push({
+                                title: 'Top Cinema - Main Server ⚡',
+                                url: src
+                            });
+                        }
+                    });
+                } catch (e) {
+                    // في حال تعذر فتح صفحة الـ embed نضع الرابط المباشر
                     streams.push({
-                        title: `Top Cinema - ${serverName}`,
-                        url: serverUrl
+                        title: 'Top Cinema - Server Player',
+                        url: embedUrl
                     });
                 }
-            });
+            }
 
-            // ج) استخراج أي iframe احتياطي في الصفحة
+            // فحص إضافي لأي iframe بصفحة المشاهدة
             $watch('iframe').each((i, element) => {
                 let src = $watch(element).attr('src') || $watch(element).attr('data-src');
                 if (src && !src.includes('facebook') && !src.includes('google')) {
                     if (src.startsWith('//')) src = 'https:' + src;
                     streams.push({
-                        title: `Top Cinema - Server Iframe ${i + 1}`,
+                        title: `Top Cinema - Server ${i + 1}`,
                         url: src
                     });
                 }
