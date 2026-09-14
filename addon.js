@@ -3,8 +3,8 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 
 const manifest = {
-    id: 'org.topcinema.scraper',
-    version: '1.0.6', // رفع رقم الإصدار لإنعاش الـ Cache داخل Stremio
+    id: 'org.topcinema.scraper.v2', // تغيير ID الإضافة لتجاوز ذاكرة Stremio القديمة
+    version: '2.0.0',               // رفع الإصدار لضمان التعرف على معالج السيرفرات
     name: 'Top Cinema - أفلام ومسلسلات',
     description: 'يستخرج أحدث الأفلام والمسلسلات تلقائياً من موقع Top Cinema',
     resources: ['catalog', 'stream'],
@@ -20,13 +20,15 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// 1. جلب قائمة الأفلام والبوسترات
+// 1. معالج الكتالوج - جلب قائمة الأفلام والبوسترات
 builder.defineCatalogHandler(async (args) => {
     if (args.type === 'movie' && args.id === 'topcinema-movies') {
         try {
             const url = 'https://web5.topcinema.fan/movies/';
             const { data } = await axios.get(url, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+                headers: { 
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' 
+                },
                 timeout: 10000
             });
             
@@ -65,14 +67,13 @@ builder.defineCatalogHandler(async (args) => {
     return { metas: [] };
 });
 
-// 2. معالج السيرفرات المحدث بشكل دقيق
+// 2. معالج السيرفرات - تنفيذ طلبات AJAX ببيانات data-id و data-server
 builder.defineStreamHandler(async (args) => {
     if (args.type === 'movie' && args.id.startsWith('topcin:')) {
         try {
             const encodedUrl = args.id.replace('topcin:', '');
             const moviePageUrl = Buffer.from(encodedUrl, 'base64').toString('utf-8');
 
-            // تحويل رابط الفيلم تلقائياً إلى رابط المشاهدة
             let watchPageUrl = moviePageUrl;
             if (!watchPageUrl.endsWith('/watch/') && !watchPageUrl.endsWith('/watch')) {
                 watchPageUrl = watchPageUrl.replace(/\/$/, '') + '/watch/';
@@ -84,7 +85,6 @@ builder.defineStreamHandler(async (args) => {
                 'Origin': 'https://web5.topcinema.fan'
             };
 
-            // جلب محتوى صفحة المشاهدة
             let watchData = '';
             try {
                 const res = await axios.get(watchPageUrl, { headers, timeout: 10000 });
@@ -99,7 +99,6 @@ builder.defineStreamHandler(async (args) => {
             const ajaxEndpoint = 'https://web5.topcinema.fan/wp-admin/admin-ajax.php';
             const serverPromises = [];
 
-            // البحث المباشر في عناصر li.server--item
             $watch('li.server--item, .watch--servers-list li').each((i, element) => {
                 const postId = $watch(element).attr('data-id');
                 const serverNum = $watch(element).attr('data-server');
@@ -150,7 +149,6 @@ builder.defineStreamHandler(async (args) => {
                 if (item) streams.push(item);
             });
 
-            // خيار احتياطي لتضمين مشغل og:video في حال فشل طلبات AJAX
             if (streams.length === 0) {
                 const embedUrl = $watch('meta[property="og:video:url"]').attr('content') || $watch('meta[property="og:video:secure_url"]').attr('content');
                 if (embedUrl) {
