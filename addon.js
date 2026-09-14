@@ -38,7 +38,6 @@ builder.defineCatalogHandler(async (args) => {
             const $ = cheerio.load(data);
             const metas = [];
 
-            // البحث في كروت الأفلام
             $('.Small--Box, .movie-box, .BlockItem, article, .post-item').each((i, element) => {
                 const linkNode = $(element).find('a').first();
                 const moviePageUrl = linkNode.attr('href') || $(element).attr('href');
@@ -63,21 +62,62 @@ builder.defineCatalogHandler(async (args) => {
                 }
             });
 
-            // تصفية العناصر المكررة
             const uniqueMetas = Array.from(new Map(metas.map(item => [item.id, item])).values());
-
-            console.log(`Scraped ${uniqueMetas.length} unique items from Top Cinema.`);
             return { metas: uniqueMetas };
         } catch (error) {
-            console.error('Error scraping Top Cinema:', error.message);
+            console.error('Error scraping Top Cinema catalog:', error.message);
             return { metas: [] };
         }
     }
     return { metas: [] };
 });
 
-// 2. معالج روابط التشغيل
+// 2. معالج روابط التشغيل والسيرفرات (Stream Handler)
 builder.defineStreamHandler(async (args) => {
+    if (args.type === 'movie' && args.id.startsWith('topcin:')) {
+        try {
+            // فك تشفير رابط صفحة الفيلم من المعرّف
+            const encodedUrl = args.id.replace('topcin:', '');
+            const moviePageUrl = Buffer.from(encodedUrl, 'base64').toString('utf-8');
+
+            const { data } = await axios.get(moviePageUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                },
+                timeout: 10000
+            });
+
+            const $ = cheerio.load(data);
+            const streams = [];
+
+            // البحث عن وسم التشغيل <iframe> أو عناصر السيرفرات في الصفحة
+            $('iframe, [data-server]').each((i, element) => {
+                let streamUrl = $(element).attr('src') || $(element).attr('data-server') || $(element).attr('data-url');
+
+                if (streamUrl) {
+                    if (streamUrl.startsWith('//')) {
+                        streamUrl = 'https:' + streamUrl;
+                    }
+
+                    // استخراج اسم المشغل/السيرفر لعرضه للمستخدم
+                    let serverName = 'Top Cinema Server ' + (i + 1);
+                    if (streamUrl.includes('dood')) serverName = 'DoodStream';
+                    else if (streamUrl.includes('voe')) serverName = 'VOE Server';
+                    else if (streamUrl.includes('streamtape')) serverName = 'Streamtape';
+
+                    streams.push({
+                        title: `Top Cinema - ${serverName}`,
+                        url: streamUrl
+                    });
+                }
+            });
+
+            return { streams };
+        } catch (error) {
+            console.error('Error fetching stream links:', error.message);
+            return { streams: [] };
+        }
+    }
     return { streams: [] };
 });
 
