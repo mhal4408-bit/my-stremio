@@ -28,9 +28,7 @@ builder.defineCatalogHandler(async (args) => {
             
             const { data } = await axios.get(url, {
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'ar,en-US;q=0.7,en;q=0.3'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
                 timeout: 10000
             });
@@ -72,7 +70,7 @@ builder.defineCatalogHandler(async (args) => {
     return { metas: [] };
 });
 
-// 2. معالج روابط التشغيل والسيرفرات المحدث
+// 2. معالج السيرفرات المتقدم (تتبع أزرار السيرفرات وطلبات AJAX)
 builder.defineStreamHandler(async (args) => {
     if (args.type === 'movie' && args.id.startsWith('topcin:')) {
         try {
@@ -80,58 +78,60 @@ builder.defineStreamHandler(async (args) => {
             const moviePageUrl = Buffer.from(encodedUrl, 'base64').toString('utf-8');
 
             const headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': moviePageUrl
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': moviePageUrl,
+                'X-Requested-With': 'XMLHttpRequest'
             };
 
-            // 1. زيارة صفحة التفاصيل الأولى للفيلم
+            // 1. الانتقال إلى صفحة الفيلم الرئيسية أولاً
             const { data: mainData } = await axios.get(moviePageUrl, { headers, timeout: 10000 });
             const $main = cheerio.load(mainData);
 
-            // البحث عن رابط زر "مشاهدة الان" بجميع الأشكال الممكنة
             let watchPageUrl = '';
             $main('a').each((i, el) => {
                 const href = $main(el).attr('href') || '';
-                const text = $main(el).text().trim();
-                
-                if (href.includes('/watch/') || text.includes('مشاهدة الان') || text.includes('مشاهدة الآن') || text.includes('مشاهدة')) {
+                if (href.includes('/watch/')) {
                     watchPageUrl = href;
                 }
             });
 
-            if (!watchPageUrl) {
-                watchPageUrl = moviePageUrl;
-            } else if (!watchPageUrl.startsWith('http')) {
-                watchPageUrl = 'https://web5.topcinema.fan' + watchPageUrl;
-            }
+            if (!watchPageUrl) watchPageUrl = moviePageUrl;
+            if (!watchPageUrl.startsWith('http')) watchPageUrl = 'https://web5.topcinema.fan' + watchPageUrl;
 
-            // 2. زيارة صفحة المشاهدة وسحب مشغلات السيرفرات
+            // 2. الانتقال لصفحة المشاهدة
             const { data: watchData } = await axios.get(watchPageUrl, { headers, timeout: 10000 });
             const $watch = cheerio.load(watchData);
             const streams = [];
 
-            $watch('iframe, [data-server], [data-url], [data-link], .server-item, ul.servers-list li').each((i, element) => {
-                let streamUrl = $watch(element).attr('src') || $watch(element).attr('data-server') || $watch(element).attr('data-url') || $watch(element).attr('data-link');
-
-                if (streamUrl) {
-                    if (streamUrl.startsWith('//')) {
-                        streamUrl = 'https:' + streamUrl;
-                    }
-
-                    let serverName = `سيرفر ${i + 1}`;
-                    if (streamUrl.includes('dood')) serverName = 'DoodStream';
-                    else if (streamUrl.includes('voe')) serverName = 'VOE';
-                    else if (streamUrl.includes('streamtape')) serverName = 'Streamtape';
-                    else if (streamUrl.includes('filelions')) serverName = 'FileLions';
-
+            // أ) البحث عن أي إطار مباشر (iframe)
+            $watch('iframe').each((i, element) => {
+                let src = $watch(element).attr('src') || $watch(element).attr('data-src');
+                if (src) {
+                    if (src.startsWith('//')) src = 'https:' + src;
                     streams.push({
-                        title: `Top Cinema - ${serverName}`,
-                        url: streamUrl
+                        title: `Top Cinema - Server ${i + 1}`,
+                        url: src
                     });
                 }
             });
 
-            return { streams };
+            // ب) البحث عن عناصر أزرار السيرفرات (AJAX attributes)
+            $watch('[data-post], [data-server], [data-link], ul.servers-list li').each((i, element) => {
+                let serverUrl = $watch(element).attr('data-link') || $watch(element).attr('data-server') || $watch(element).attr('data-url');
+                if (serverUrl) {
+                    if (serverUrl.startsWith('//')) serverUrl = 'https:' + serverUrl;
+                    const serverName = $watch(element).text().trim() || `Server ${i + 1}`;
+                    
+                    streams.push({
+                        title: `Top Cinema - ${serverName}`,
+                        url: serverUrl
+                    });
+                }
+            });
+
+            // تصفية السيرفرات المكررة
+            const uniqueStreams = Array.from(new Map(streams.map(item => [item.url, item])).values());
+            return { streams: uniqueStreams };
         } catch (error) {
             console.error('Error fetching stream links:', error.message);
             return { streams: [] };
