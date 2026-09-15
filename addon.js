@@ -4,7 +4,7 @@ const cheerio = require('cheerio');
 
 const builder = new addonBuilder({
     id: 'org.sexmasry.addon',
-    version: '1.0.2',
+    version: '1.0.3',
     name: 'Sex Masry Addon',
     description: 'Stremio Addon for Sex Masry',
     types: ['movie'],
@@ -19,13 +19,11 @@ const builder = new addonBuilder({
     resources: ['catalog', 'stream']
 });
 
-// جلب الأفلام من الصفحة الرئيسية وبعض الصفحات الإضافية لجلب عدد أكبر
 builder.defineCatalogHandler(async function(args) {
     try {
         let metas = [];
         let seenLinks = new Set();
 
-        // سحب أول 3 صفحات مثلاً لزيادة عدد الأفلام وتجاوز مشكلة الصفحة الأولى فقط
         for (let page = 1; page <= 3; page++) {
             let pageUrl = page === 1 ? 'https://sex-masry.site/' : `https://sex-masry.site/page/${page}/`;
             
@@ -76,8 +74,7 @@ builder.defineCatalogHandler(async function(args) {
                     }
                 });
             } catch (err) {
-                // لو صفحة انتهت أو حصل خطأ نتخطاها ونكمل الباقي
-                console.log(`Skipped page ${page due to error}`);
+                console.log(`Skipped page ${page} due to error`);
             }
         }
 
@@ -88,13 +85,11 @@ builder.defineCatalogHandler(async function(args) {
     }
 });
 
-// معالجة رابط الفيلم واستخراج رابط الفيديو المباشر بداخله
 builder.defineStreamHandler(async function(args) {
     try {
         const encodedUrl = args.id.replace('sexmasry:', '');
         const targetUrl = Buffer.from(encodedUrl, 'base64').toString('utf8');
 
-        // الدخول لصفحة الفيلم لجلب رابط الفيديو الفعلي الداخلي
         const response = await axios.get(targetUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -105,14 +100,12 @@ builder.defineStreamHandler(async function(args) {
         const $ = cheerio.load(response.data);
         let videoUrl = '';
 
-        // البحث عن روابط الفيديو أو الـ iframe داخل صفحة الفيلم
         const sourceAttr = $('video source').attr('src') || $('iframe').attr('src') || $('video').attr('src');
         
         if (sourceAttr) {
             videoUrl = sourceAttr;
             if (videoUrl.startsWith('//')) videoUrl = 'https:' + videoUrl;
         } else {
-            // لو الموقع بيحط رابط مباشر داخل عنصر معين أو سكربت، نبحث عن روابط mp4
             $('a').each((i, el) => {
                 let href = $(el).attr('href');
                 if (href && (href.endsWith('.mp4') || href.includes('embed') || href.includes('video'))) {
@@ -121,7 +114,6 @@ builder.defineStreamHandler(async function(args) {
             });
         }
 
-        // لو ما لقيناش رابط فيديو مباشر، نعرض رابط الصفحة كحل احتياطي
         const finalStreamUrl = videoUrl || targetUrl;
 
         return {
