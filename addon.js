@@ -4,7 +4,7 @@ const cheerio = require('cheerio');
 
 const builder = new addonBuilder({
     id: 'org.sexmasry.addon',
-    version: '1.0.1',
+    version: '1.0.2',
     name: 'Sex Masry Addon',
     description: 'Stremio Addon for Sex Masry',
     types: ['movie'],
@@ -12,64 +12,74 @@ const builder = new addonBuilder({
         {
             type: 'movie',
             id: 'sexmasry_catalog',
-            name: 'Sex Masry Movies'
+            name: 'Sex Masry Movies',
+            extra: [{ name: 'skip', isRequired: false }]
         }
     ],
     resources: ['catalog', 'stream']
 });
 
+// جلب الأفلام من الصفحة الرئيسية وبعض الصفحات الإضافية لجلب عدد أكبر
 builder.defineCatalogHandler(async function(args) {
     try {
-        const response = await axios.get('https://sex-masry.site/', {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                'Referer': 'https://sex-masry.site/'
-            }
-        });
-        
-        const $ = cheerio.load(response.data);
-        const metas = [];
-        const seenLinks = new Set();
+        let metas = [];
+        let seenLinks = new Set();
 
-        // البحث الشامل عن أي رابط داخلي يحيط به صورة أو عنوان
-        $('a').each((index, element) => {
-            const el = $(element);
-            const href = el.attr('href');
+        // سحب أول 3 صفحات مثلاً لزيادة عدد الأفلام وتجاوز مشكلة الصفحة الأولى فقط
+        for (let page = 1; page <= 3; page++) {
+            let pageUrl = page === 1 ? 'https://sex-masry.site/' : `https://sex-masry.site/page/${page}/`;
             
-            // تصفية الروابط لتكون خاصة بالصفحات الداخلية للأفلام وليست الروابط العامة
-            if (href && (href.includes('/movie/') || href.includes('/post/') || el.find('img').length > 0)) {
-                if (!seenLinks.has(href)) {
-                    seenLinks.add(href);
+            try {
+                const response = await axios.get(pageUrl, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                        'Referer': 'https://sex-masry.site/'
+                    },
+                    timeout: 5000
+                });
 
-                    // محاولة استخراج العنوان والبوستر بأكثر من طريقة لضمان إيجادها
-                    const title = el.attr('title') || el.find('img').attr('alt') || el.text().trim() || `Item ${metas.length + 1}`;
-                    let img = el.find('img').attr('data-src') || el.find('img').attr('src') || '';
+                const $ = cheerio.load(response.data);
 
-                    if (img.startsWith('//')) {
-                        img = 'https:' + img;
-                    } else if (img && !img.startsWith('http')) {
-                        img = 'https://sex-masry.site' + img;
-                    }
-
-                    // ضبط رابط الـ URL الكامل إذا كان نسبياً
-                    let fullUrl = href;
-                    if (href.startsWith('/')) {
-                        fullUrl = 'https://sex-masry.site' + href;
-                    }
-
-                    const id = 'sexmasry:' + Buffer.from(fullUrl).toString('base64');
+                $('a').each((index, element) => {
+                    const el = $(element);
+                    const href = el.attr('href');
                     
-                    if (img) { // إضافته فقط إذا وجدنا صورة له لضمان جودة العرض
-                        metas.push({
-                            id: id,
-                            type: 'movie',
-                            name: title.substring(0, 50), // تقصير العنوان لو طويل جداً
-                            poster: img
-                        });
+                    if (href && (href.includes('/movie/') || href.includes('/post/') || el.find('img').length > 0)) {
+                        if (!seenLinks.has(href)) {
+                            seenLinks.add(href);
+
+                            const title = el.attr('title') || el.find('img').attr('alt') || el.text().trim() || `Movie ${metas.length + 1}`;
+                            let img = el.find('img').attr('data-src') || el.find('img').attr('src') || '';
+
+                            if (img.startsWith('//')) {
+                                img = 'https:' + img;
+                            } else if (img && !img.startsWith('http')) {
+                                img = 'https://sex-masry.site' + img;
+                            }
+
+                            let fullUrl = href;
+                            if (href.startsWith('/')) {
+                                fullUrl = 'https://sex-masry.site' + href;
+                            }
+
+                            const id = 'sexmasry:' + Buffer.from(fullUrl).toString('base64');
+                            
+                            if (img && title.length > 2) {
+                                metas.push({
+                                    id: id,
+                                    type: 'movie',
+                                    name: title.substring(0, 60),
+                                    poster: img
+                                });
+                            }
+                        }
                     }
-                }
+                });
+            } catch (err) {
+                // لو صفحة انتهت أو حصل خطأ نتخطاها ونكمل الباقي
+                console.log(`Skipped page ${page due to error}`);
             }
-        });
+        }
 
         return { metas: metas };
     } catch (e) {
@@ -78,16 +88,47 @@ builder.defineCatalogHandler(async function(args) {
     }
 });
 
+// معالجة رابط الفيلم واستخراج رابط الفيديو المباشر بداخله
 builder.defineStreamHandler(async function(args) {
     try {
         const encodedUrl = args.id.replace('sexmasry:', '');
         const targetUrl = Buffer.from(encodedUrl, 'base64').toString('utf8');
 
+        // الدخول لصفحة الفيلم لجلب رابط الفيديو الفعلي الداخلي
+        const response = await axios.get(targetUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Referer': 'https://sex-masry.site/'
+            }
+        });
+
+        const $ = cheerio.load(response.data);
+        let videoUrl = '';
+
+        // البحث عن روابط الفيديو أو الـ iframe داخل صفحة الفيلم
+        const sourceAttr = $('video source').attr('src') || $('iframe').attr('src') || $('video').attr('src');
+        
+        if (sourceAttr) {
+            videoUrl = sourceAttr;
+            if (videoUrl.startsWith('//')) videoUrl = 'https:' + videoUrl;
+        } else {
+            // لو الموقع بيحط رابط مباشر داخل عنصر معين أو سكربت، نبحث عن روابط mp4
+            $('a').each((i, el) => {
+                let href = $(el).attr('href');
+                if (href && (href.endsWith('.mp4') || href.includes('embed') || href.includes('video'))) {
+                    videoUrl = href;
+                }
+            });
+        }
+
+        // لو ما لقيناش رابط فيديو مباشر، نعرض رابط الصفحة كحل احتياطي
+        const finalStreamUrl = videoUrl || targetUrl;
+
         return {
             streams: [
                 {
-                    title: 'Direct Stream ⚡',
-                    url: targetUrl
+                    title: 'Watch Direct Video ⚡',
+                    url: finalStreamUrl
                 }
             ]
         };
